@@ -4,6 +4,10 @@ Types are named by CURIE ("schema:Course", "wm:CourseSurvey"). Each pack is an R
 prefixes it defines; packs are parsed with rdflib on first use and cached as JSON (full IRIs, so a
 cache stays valid whatever other packs are loaded alongside it). Schema.org is the base: classes
 with no known parent hang off schema:Thing, so every node can be found by a "what is X" query.
+
+A pack's rdfs:subClassOf / owl:equivalentClass triples about classes outside its own namespaces
+are kept as alignment links and applied to whichever packs define those classes. A pack with no
+prefixes of its own is a pure alignment pack.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import requests
 log = logging.getLogger(__name__)
 
 ONTOLOGY_DATA = Path(__file__).resolve().parent.parent / "data" / "ontologies"
-CACHE_FORMAT = 1
+CACHE_FORMAT = 2
 
 RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 RDFS = "http://www.w3.org/2000/01/rdf-schema#"
@@ -51,15 +55,15 @@ class OntologyPack:
     source: str
     # rdflib parser format; guessed from the source's extension if None.
     format: str | None = None
-    # Part of the cache key; pin remote sources so stored labels don't drift.
+    # Part of a remote pack's cache key; pin remote sources so stored labels don't drift. (Local
+    # files are keyed by their contents.)
     version: str = ""
     # Packs this one aligns to; they're loaded first.
     requires: tuple[str, ...] = ()
 
     @property
-    def cache_name(self) -> str:
-        digest = hashlib.sha1(f"{CACHE_FORMAT}|{self.source}|{self.version}".encode()).hexdigest()[:12]
-        return f"{self.name}-{digest}.json"
+    def is_remote(self) -> bool:
+        return self.source.startswith(("http://", "https://"))
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,8 @@ class _RawPack:
 
     classes: dict[str, dict] = field(default_factory=dict)
     properties: dict[str, dict] = field(default_factory=dict)
+    # [subject, "subClassOf" | "equivalentClass", object] about classes outside the pack's namespaces.
+    links: list[list[str]] = field(default_factory=list)
 
 
 class OntologyRegistry:
@@ -102,6 +108,11 @@ class OntologyRegistry:
         self.properties: dict[str, OntProperty] = {}
         self._ancestors: dict[str, list[str]] = {}
         self._stubbed: set[str] = set()
+        # Packs that were selected but couldn't be loaded (and had no fallback).
+        self.unavailable: list[str] = []
+        # Alignment links each pack contributed that connected two loaded classes.
+        self.applied_links: dict[str, int] = {}
+        self._keys: dict[str, str] = {}
 
         packs = _dependency_order(list(packs))
         for pack in packs:
@@ -113,25 +124,27 @@ class OntologyRegistry:
 
         raw: list[tuple[OntologyPack, _RawPack]] = []
         for pack in packs:
-            loaded = _load_pack(pack, cache_dir, timeout)
+            loaded, key = _load_pack(pack, cache_dir, timeout)
             if loaded is None:
                 log.warning("Ontology pack %r unavailable; its types will have shallow labels", pack.name)
                 if pack.name == DEFAULT_PREFIX:
-                    loaded = _stub_schema_pack()
+                    loaded, key = _stub_schema_pack(), "stub"
                     self._stubbed.add(pack.name)
                 else:
+                    self.unavailable.append(pack.name)
                     continue
+            self._keys[pack.name] = key
             self.packs.append(pack)
             raw.append((pack, loaded))
         self._build(raw)
 
     @property
     def fingerprint(self) -> str:
-        """Identifies the loaded packs and versions; stored labels are valid for one fingerprint."""
-        def tag(p: OntologyPack) -> str:
-            return "stub" if p.name in self._stubbed else p.cache_name.rsplit("-", 1)[-1].removesuffix(".json")
+        """Identifies the loaded packs and their contents; stored labels are valid for one fingerprint."""
+        return ",".join(f"{p.name}@{self._keys[p.name]}" for p in self.packs)
 
-        return ",".join(f"{p.name}@{tag(p)}" for p in self.packs)
+    def is_stubbed(self, pack_name: str) -> bool:
+        return pack_name in self._stubbed
 
     # --- Names -----------------------------------------------------------------------------
 
@@ -221,6 +234,34 @@ class OntologyRegistry:
     def is_a(self, name: str, ancestor: str) -> bool:
         return (self.curie(ancestor) or ancestor) in self.ancestors(name)
 
+    def why(self, name: str, ancestor: str) -> list[tuple[str, str, str]] | None:
+        """Shortest chain of (class, "subClassOf" | "equivalentClass", class) steps from a class to an
+        ancestor, or None if it isn't one. [] means they're the same class."""
+        start, goal = self.curie(name) or name, self.curie(ancestor) or ancestor
+        if goal not in self.ancestors(start):
+            return None
+        if start not in self.classes:  # unknown type: only the implicit root link
+            return [] if start == goal else [(start, "subClassOf", goal)]
+        came_from: dict[str, tuple[str, str, str] | None] = {start: None}
+        queue = [start]
+        while queue:
+            node = queue.pop(0)
+            if node == goal:
+                steps = []
+                while came_from[node] is not None:
+                    steps.append(came_from[node])
+                    node = came_from[node][0]
+                return steps[::-1]
+            cls = self.classes.get(node)
+            if cls is None:
+                continue
+            for rel, others in (("equivalentClass", cls.equivalents), ("subClassOf", cls.parents)):
+                for other in others:
+                    if other not in came_from:
+                        came_from[other] = (node, rel, other)
+                        queue.append(other)
+        return None
+
     def is_datatype(self, curie: str) -> bool:
         cls = self.classes.get(curie)
         return bool(cls and cls.datatype)
@@ -256,6 +297,18 @@ class OntologyRegistry:
                     prop_iris[curie] = (pack.name, d)
 
         known = set(class_iris)
+        extra_parents: dict[str, list[str]] = {}
+        equivalences: list[tuple[str, str]] = []
+        for pack, data in raw:
+            self.applied_links[pack.name] = 0
+            for subj, rel, obj in data.links:
+                a, b = self.compact(subj), self.compact(obj)
+                if a in known and b in known and a != b:
+                    self.applied_links[pack.name] += 1
+                    if rel == "equivalentClass":
+                        equivalences.append((a, b))
+                    else:
+                        extra_parents.setdefault(a, []).append(b)
         # Equivalence groups (union-find over owl:equivalentClass, both directions).
         parent: dict[str, str] = {c: c for c in known}
 
@@ -268,6 +321,8 @@ class OntologyRegistry:
         for curie, (_, d) in class_iris.items():
             for other in self._known(d.get("equivalents", ()), known):
                 parent[find(other)] = find(curie)
+        for a, b in equivalences:
+            parent[find(b)] = find(a)
         groups: dict[str, list[str]] = {}
         for c in sorted(known):
             groups.setdefault(find(c), []).append(c)
@@ -275,7 +330,8 @@ class OntologyRegistry:
 
         datatypes = {c for c, (_, d) in class_iris.items() if d.get("datatype")}
         for curie, (pack, d) in class_iris.items():
-            parents = tuple(p for p in self._known(d.get("parents", ()), known) if p != curie)
+            parents = self._known(d.get("parents", ()), known)
+            parents = tuple(dict.fromkeys(p for p in parents + tuple(extra_parents.get(curie, ())) if p != curie))
             # Rootless classes (including other vocabularies' top classes) hang off the registry root.
             if not parents and curie != ROOT and ROOT in known:
                 parents = (ROOT,)
@@ -327,35 +383,53 @@ def _dependency_order(packs: list[OntologyPack]) -> list[OntologyPack]:
 # --- Loading -------------------------------------------------------------------------------
 
 
-def _load_pack(pack: OntologyPack, cache_dir: Path | None, timeout: float) -> _RawPack | None:
-    cache_file = cache_dir / "ontologies" / pack.cache_name if cache_dir else None
+def _digest(*parts: str) -> str:
+    return hashlib.sha1("|".join([str(CACHE_FORMAT), *parts]).encode()).hexdigest()[:12]
+
+
+def _load_pack(pack: OntologyPack, cache_dir: Path | None, timeout: float) -> tuple[_RawPack | None, str]:
+    """Load a pack from cache or source. Returns the extracted definitions and the pack's cache key."""
+    text = None
+    try:
+        if pack.is_remote:
+            key = _digest(pack.source, pack.version)
+        else:
+            # Local files are keyed by content, so edits take effect (and trigger a relabel).
+            text = _local_path(pack.source).read_text()
+            key = _digest(pack.prefixes.__repr__(), text)
+    except OSError as e:
+        log.warning("Could not load ontology pack %r from %s (%s)", pack.name, pack.source, e)
+        return None, ""
+
+    cache_file = cache_dir / "ontologies" / f"{pack.name}-{key}.json" if cache_dir else None
     if cache_file and cache_file.exists():
         try:
             data = json.loads(cache_file.read_text())
-            return _RawPack(data["classes"], data["properties"])
+            return _RawPack(data["classes"], data["properties"], data["links"]), key
         except (ValueError, KeyError) as e:
             log.warning("Ignoring unreadable ontology cache %s (%s)", cache_file, e)
 
     try:
-        text = _read_source(pack.source, timeout)
+        if text is None:
+            resp = requests.get(pack.source, timeout=timeout)
+            resp.raise_for_status()
+            text = resp.text
         loaded = _extract(text, pack)
-    except Exception as e:  # rdflib raises a variety of parser errors
+    except Exception as e:  # requests and rdflib raise a variety of errors
         log.warning("Could not load ontology pack %r from %s (%s)", pack.name, pack.source, e)
-        return None
+        return None, ""
 
     if cache_file:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"classes": loaded.classes, "properties": loaded.properties}))
-    return loaded
+        cache_file.write_text(
+            json.dumps({"classes": loaded.classes, "properties": loaded.properties, "links": loaded.links})
+        )
+    return loaded, key
 
 
-def _read_source(source: str, timeout: float) -> str:
-    if source.startswith(("http://", "https://")):
-        resp = requests.get(source, timeout=timeout)
-        resp.raise_for_status()
-        return resp.text
-    path = Path(source)
-    return (path if path.is_absolute() else ONTOLOGY_DATA / path).read_text()
+def _local_path(source: str) -> Path:
+    path = Path(source).expanduser()
+    return path if path.is_absolute() else ONTOLOGY_DATA / path
 
 
 def _extract(text: str, pack: OntologyPack) -> _RawPack:
@@ -391,10 +465,13 @@ def _extract(text: str, pack: OntologyPack) -> _RawPack:
                 "comment": text_of(s, RDFS + "comment"),
                 "datatype": bool(DATATYPE_MARKERS.intersection(objs(s, [RDF + "type"]))),
             }
-    # Equivalences are often asserted from the other side; record them on our classes too.
-    for s, o in g.subject_objects(URIRef(OWL + "equivalentClass")):
-        if ours(o) and str(o) in raw.classes and isinstance(s, URIRef):
-            raw.classes[str(o)]["equivalents"].append(str(s))
+    # Class links asserted about other vocabularies' classes (including equivalences stated from the
+    # other side, e.g. "schema:Person owl:equivalentClass dbo:Person" in the dbo pack).
+    for rel in ("subClassOf", "equivalentClass"):
+        pred = URIRef((RDFS if rel == "subClassOf" else OWL) + rel)
+        for s, o in g.subject_objects(pred):
+            if isinstance(s, URIRef) and isinstance(o, URIRef) and not ours(s):
+                raw.links.append([str(s), rel, str(o)])
     for type_iri in PROPERTY_TYPES:
         for s in g.subjects(URIRef(RDF + "type"), URIRef(type_iri)):
             if not ours(s) or str(s) in raw.properties:

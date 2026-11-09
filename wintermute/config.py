@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_DATA = Path(__file__).resolve().parent / "data"
 
 
-def _env_path(name: str, default: Path) -> Path:
+def _env_path(name: str, default: Path | None) -> Path | None:
     value = os.environ.get(name)
     return Path(value).expanduser() if value else default
 
@@ -30,10 +30,14 @@ class Settings:
     # Google Knowledge Graph lookups are on hold; set WINTERMUTE_GOOGLE_KG=1 (plus an API key) to enable.
     google_kg: bool = field(default_factory=lambda: os.environ.get("WINTERMUTE_GOOGLE_KG", "0") == "1")
     google_api_key: str | None = field(default_factory=lambda: os.environ.get("GOOGLE_KGSEARCH_API_KEY"))
-    # Ontology packs to load (see wintermute/kb/ontology_packs.py), comma-separated in the env var.
-    ontologies: list[str] = field(
-        default_factory=lambda: [
-            n.strip() for n in os.environ.get("WINTERMUTE_ONTOLOGIES", "schema,wm,dbo").split(",") if n.strip()
-        ]
+    # Ontology packs to load, comma-separated in the env var. None defers to the manifest's `load`
+    # list, then the built-in defaults (see wintermute/kb/ontology_packs.py).
+    ontologies: list[str] | None = field(
+        default_factory=lambda: [n.strip() for n in os.environ.get("WINTERMUTE_ONTOLOGIES", "").split(",") if n.strip()]
+        or None
+    )
+    # TOML manifest declaring extra ontology packs (and optionally which packs to load).
+    ontology_manifest: Path | None = field(
+        default_factory=lambda: _env_path("WINTERMUTE_ONTOLOGY_MANIFEST", None)
     )
     http_timeout: float = 10.0

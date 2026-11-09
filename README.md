@@ -18,11 +18,16 @@ uv sync
 uv run wintermute init     # one-time: builds data/wintermute.lbdb from FrameNet + course data (~20s)
 uv run wintermute          # chat in the terminal
 uv run wintermute slack    # run as a Slack bot (needs SLACK_BOT_TOKEN and SLACK_APP_TOKEN)
+uv run wintermute ontologies                       # list the loaded ontology packs
+uv run wintermute ontologies explain "CS 7637" --is CreativeWork   # explain a type, property or stored thing
 uv run pytest              # tests
 ```
 
 Unknown topics are looked up on DBpedia (SPARQL). Optional environment: `WINTERMUTE_REMOTE_LOOKUPS=0` disables remote lookups entirely; `WINTERMUTE_DB` overrides
 the database location.
+
+Knowledge is typed with Schema.org plus pluggable ontology packs (the DBpedia ontology by default,
+and others such as Bioschemas through a manifest). See [docs/ontology-packs.md](docs/ontology-packs.md).
 
 ## Project Goal
 

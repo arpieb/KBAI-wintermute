@@ -1,0 +1,23 @@
+@prefix dbo: <http://dbpedia.org/ontology/> .
+@prefix schema: <https://schema.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# Aligns the DBpedia ontology's life-science classes to Schema.org. (Bioschemas already declares its
+# types equivalent to Schema.org's, so they pick these up too.) The DBpedia ontology snapshot
+# (2026.07.22) links none of these to Schema.org, so without this file a gene found on DBpedia is
+# only a dbo:Gene, not a schema:Gene or bioschemas:Gene.
+
+dbo:Gene owl:equivalentClass schema:Gene .
+dbo:Protein owl:equivalentClass schema:Protein .
+dbo:ChemicalSubstance owl:equivalentClass schema:ChemicalSubstance .
+dbo:AnatomicalStructure owl:equivalentClass schema:AnatomicalStructure .
+
+# Narrower than their Schema.org counterparts, so subclass rather than equivalence.
+dbo:Biomolecule rdfs:subClassOf schema:MolecularEntity .
+dbo:Drug rdfs:subClassOf schema:Drug .
+dbo:Disease rdfs:subClassOf schema:MedicalCondition .
+
+# Deliberately NOT aligned: dbo:Species with schema:Taxon. In the DBpedia ontology, dbo:Person is a
+# subclass of dbo:Animal < dbo:Eukaryote < dbo:Species, so that equivalence would make every person
+# a taxon. Check the other side's hierarchy before asserting an alignment.

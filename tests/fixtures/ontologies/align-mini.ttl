@@ -1,0 +1,10 @@
+@prefix dbo: <http://dbpedia.org/ontology/> .
+@prefix schema: <https://schema.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# An alignment-only pack: links between classes of the schema and dbo fixture packs.
+dbo:TopicalConcept rdfs:subClassOf schema:Intangible .
+dbo:Settlement owl:equivalentClass schema:AdministrativeArea .
+# Ignored: neither class is loaded.
+dbo:Nowhere rdfs:subClassOf schema:Nothing .

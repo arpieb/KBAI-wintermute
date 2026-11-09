@@ -3,7 +3,7 @@ name = "wintermute"
 version = "2.0.0"
 description = "KBAI conversational agent (CS 7637, FA 2016), modernized for Python 3"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "en-core-web-sm",
     "ladybug>=0.22.3",

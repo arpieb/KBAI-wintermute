@@ -11,7 +11,7 @@ from wintermute.kb import loaders
 from wintermute.kb.graph import Graph
 from wintermute.kb.lookup import DBpediaLookup, GoogleKGLookup
 from wintermute.kb.ontology import OntologyRegistry
-from wintermute.kb.ontology_packs import packs_for
+from wintermute.kb.ontology_packs import select_packs
 from wintermute.models import FNFrame, FNFrameElement, FNLexicalUnit, Thing
 
 log = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class Knowledgebase:
         self.graph = graph or Graph(self.settings.db_path)
         self._check_format()
         self.ontology = ontology or OntologyRegistry(
-            packs_for(self.settings.ontologies), self.settings.cache_dir, self.settings.http_timeout
+            select_packs(self.settings), self.settings.cache_dir, self.settings.http_timeout
         )
         self._sync_labels()
         self.dbpedia = DBpediaLookup(self.ontology, self.settings.http_timeout)
@@ -116,10 +116,10 @@ class Knowledgebase:
     def _thing(node: dict[str, Any]) -> Thing:
         return Thing.from_record(node["ID"], node["name"], list(node["labels"]), json.loads(node["props"] or "{}"))
 
-    def find_topics(self, query: str, label: str = "schema:Thing") -> list[Thing]:
+    def find_topics(self, query: str, label: str = "schema:Thing", remote: bool = True) -> list[Thing]:
         """Find things by name or alias, falling back to DBpedia then Google, caching what's found."""
         topics = self._find_topics_local(query, label)
-        if not topics and self.settings.remote_lookups:
+        if not topics and remote and self.settings.remote_lookups:
             remote = self.dbpedia.search(query) or self.google.search(query, label)
             for thing in remote:
                 self.save_thing(thing)
