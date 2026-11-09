@@ -1,4 +1,4 @@
-"""Command line entry point: `wintermute [chat|init|slack]`."""
+"""Command line entry point: `wintermute [chat|init|slack|ontologies]`."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from wintermute.agent import Agent
 from wintermute.config import Settings
 from wintermute.kb import Knowledgebase
 from wintermute.kb.knowledgebase import KBFormatError
+from wintermute.kb.ontology import OntologyRegistry
+from wintermute.kb.ontology_packs import ManifestError, select_packs
 
 
 def chat(agent: Agent, context_id: str) -> None:
@@ -34,6 +36,12 @@ def main(argv: list[str] | None = None) -> None:
     chat_p.add_argument("--context", default="terminal", help="conversation context ID to load/save")
     sub.add_parser("init", help="build the knowledge base (FrameNet, courses) and exit")
     sub.add_parser("slack", help="run as a Slack bot (Socket Mode)")
+    onto_p = sub.add_parser("ontologies", help="list loaded ontology packs, or explain a type, property or thing")
+    onto_sub = onto_p.add_subparsers(dest="onto_command")
+    explain_p = onto_sub.add_parser("explain", help="explain a type, property, or stored thing")
+    explain_p.add_argument("term", help='a type or property ("Place", "dbo:Mountain", an IRI) or a thing\'s name')
+    explain_p.add_argument("--is", dest="is_type", metavar="TYPE", help="show why it is (or isn't) a TYPE")
+    explain_p.add_argument("--properties", action="store_true", help="list the properties that apply to it")
     args = parser.parse_args(argv)
 
     level = [logging.WARNING, logging.INFO, logging.DEBUG][min(args.verbose, 2)]
@@ -42,9 +50,12 @@ def main(argv: list[str] | None = None) -> None:
     logging.getLogger("wintermute.kb.loaders").setLevel(min(level, logging.INFO))
 
     settings = Settings()
+    if args.command == "ontologies":
+        ontologies(args, settings)
+        return
     try:
         kb = Knowledgebase(settings)
-    except KBFormatError as e:
+    except (KBFormatError, ManifestError) as e:
         raise SystemExit(str(e)) from None
     try:
         kb.initialize()
@@ -60,6 +71,37 @@ def main(argv: list[str] | None = None) -> None:
             chat(agent, getattr(args, "context", "terminal"))
     finally:
         kb.close()
+
+
+def ontologies(args: argparse.Namespace, settings: Settings) -> None:
+    from wintermute import ontology_cli
+
+    try:
+        registry = OntologyRegistry(select_packs(settings), settings.cache_dir, settings.http_timeout)
+    except (ManifestError, ValueError) as e:
+        raise SystemExit(str(e)) from None
+    if args.onto_command != "explain":
+        print(ontology_cli.describe_packs(registry))
+        return
+
+    kb = None
+
+    def find_things(name: str):
+        # Only opened when the term isn't a type, and never looks anything up remotely.
+        nonlocal kb
+        if not settings.db_path.exists():
+            return []
+        try:
+            kb = Knowledgebase(settings, ontology=registry)
+        except KBFormatError as e:
+            raise SystemExit(str(e)) from None
+        return kb.find_topics(name, remote=False)
+
+    try:
+        print(ontology_cli.explain(registry, args.term, args.is_type, args.properties, find_things))
+    finally:
+        if kb is not None:
+            kb.close()
 
 
 if __name__ == "__main__":

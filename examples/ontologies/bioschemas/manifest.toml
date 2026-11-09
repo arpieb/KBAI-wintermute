@@ -1,0 +1,23 @@
+# Ontology manifest for a life-sciences agent: the default packs plus Bioschemas, and an alignment
+# pack connecting the DBpedia ontology's life-science classes to Schema.org.
+#
+#   WINTERMUTE_ONTOLOGY_MANIFEST=examples/ontologies/bioschemas/manifest.toml uv run wintermute ontologies
+#
+# See docs/ontology-packs.md.
+
+load = ["schema", "wm", "dbo", "bioschemas", "dbpedia-lifesci-align"]
+
+# Bioschemas types (https://bioschemas.org/types/), release v20250219, pinned to the commit of
+# BioSchemas/bioschemas.github.io that published it. It declares its Gene, Protein, Taxon, ... as
+# owl:equivalentClass to the Schema.org types of the same name.
+[packs.bioschemas]
+prefixes = { bioschemas = "https://bioschemas.org/terms/" }
+source = "https://raw.githubusercontent.com/BioSchemas/bioschemas.github.io/12f9849566f95a2c920cc97f38f2b734e3908fc3/pages/_types/bioschemas_types.jsonld"
+format = "json-ld"
+version = "v20250219"
+requires = ["schema"]
+
+# An alignment pack: no namespace of its own, just links between other packs' classes.
+[packs.dbpedia-lifesci-align]
+source = "dbpedia-lifesci-align.ttl"
+requires = ["schema", "dbo"]

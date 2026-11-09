@@ -1,10 +1,20 @@
-"""Built-in ontology packs. Settings.ontologies (WINTERMUTE_ONTOLOGIES) picks which ones load."""
+"""Ontology packs: the built-in catalog, plus extra packs declared in a TOML manifest.
+
+Which packs load is decided by, in order: WINTERMUTE_ONTOLOGIES, the manifest's `load` list, then
+DEFAULT_PACKS. See docs/ontology-packs.md.
+"""
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Iterable
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from wintermute.kb.ontology import SCHEMA_IRIS, OntologyPack
+
+if TYPE_CHECKING:
+    from wintermute.config import Settings
 
 SCHEMA_ORG_VERSION = "30.1"
 
@@ -46,9 +56,71 @@ PACKS: dict[str, OntologyPack] = {
 
 DEFAULT_PACKS = ("schema", "wm", "dbo")
 
+PACK_KEYS = {"prefixes", "source", "format", "version", "requires"}
 
-def packs_for(names: Iterable[str]) -> list[OntologyPack]:
-    unknown = [n for n in names if n not in PACKS]
+
+class ManifestError(ValueError):
+    pass
+
+
+def load_manifest(path: Path) -> tuple[dict[str, OntologyPack], list[str] | None]:
+    """Parse an ontology manifest. Returns its packs and its `load` list (None if it has none).
+
+    Relative local sources are resolved against the manifest's directory.
+    """
+    try:
+        data = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ManifestError(f"Can't read ontology manifest {path}: {e}") from e
+
+    unknown = set(data) - {"load", "packs"}
     if unknown:
-        raise ValueError(f"Unknown ontology pack(s): {', '.join(unknown)} (available: {', '.join(PACKS)})")
-    return [PACKS[n] for n in names]
+        raise ManifestError(f"{path}: unknown top-level key(s) {', '.join(sorted(unknown))}")
+    load = data.get("load")
+    if load is not None and not (isinstance(load, list) and all(isinstance(n, str) for n in load)):
+        raise ManifestError(f"{path}: `load` must be a list of pack names")
+
+    packs: dict[str, OntologyPack] = {}
+    for name, spec in data.get("packs", {}).items():
+        where = f"{path}: [packs.{name}]"
+        if name in PACKS:
+            raise ManifestError(f"{where} redefines the built-in pack {name!r}")
+        if not isinstance(spec, dict):
+            raise ManifestError(f"{where} must be a table")
+        bad = set(spec) - PACK_KEYS
+        if bad:
+            raise ManifestError(f"{where}: unknown key(s) {', '.join(sorted(bad))}")
+        if "source" not in spec:
+            raise ManifestError(f"{where} needs a `source`")
+        source = str(spec["source"])
+        if not source.startswith(("http://", "https://")) and not Path(source).expanduser().is_absolute():
+            source = str((path.parent / source).resolve())
+        prefixes = {p: [iris] if isinstance(iris, str) else list(iris) for p, iris in spec.get("prefixes", {}).items()}
+        packs[name] = OntologyPack(
+            name=name,
+            prefixes=prefixes,
+            source=source,
+            format=spec.get("format"),
+            version=str(spec.get("version", "")),
+            requires=tuple(spec.get("requires", ())),
+        )
+    return packs, load
+
+
+def packs_for(names: Iterable[str], extra: dict[str, OntologyPack] | None = None) -> list[OntologyPack]:
+    available = {**PACKS, **(extra or {})}
+    names = list(names)
+    unknown = [n for n in names if n not in available]
+    if unknown:
+        raise ValueError(f"Unknown ontology pack(s): {', '.join(unknown)} (available: {', '.join(available)})")
+    return [available[n] for n in names]
+
+
+def select_packs(settings: Settings) -> list[OntologyPack]:
+    """The packs an agent should load, from its settings and (optional) manifest."""
+    extra: dict[str, OntologyPack] = {}
+    load = None
+    if settings.ontology_manifest:
+        extra, load = load_manifest(settings.ontology_manifest)
+    names = settings.ontologies or load or list(DEFAULT_PACKS)
+    return packs_for(names, extra)

@@ -1,0 +1,11 @@
+load = ["schema", "wm", "extra", "extra-align"]
+
+[packs.extra]
+prefixes = { ex = "http://example.org/ns#" }
+source = "extra.ttl"
+version = "1"
+requires = ["schema"]
+
+[packs.extra-align]
+source = "/absolute/align.ttl"
+requires = ["schema", "extra"]

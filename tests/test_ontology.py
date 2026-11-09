@@ -207,7 +207,8 @@ def test_dbo_types_satisfy_schema_question_filters(with_dbo):
 
 def test_default_packs_include_dbpedia_ontology(monkeypatch):
     monkeypatch.delenv("WINTERMUTE_ONTOLOGIES", raising=False)
-    assert Settings().ontologies == ["schema", "wm", "dbo"]
+    monkeypatch.delenv("WINTERMUTE_ONTOLOGY_MANIFEST", raising=False)
+    assert [p.name for p in ontology_packs.select_packs(Settings())] == ["schema", "wm", "dbo"]
     monkeypatch.setenv("WINTERMUTE_ONTOLOGIES", "schema, wm")
     assert Settings().ontologies == ["schema", "wm"]
     dbo = PACKS["dbo"]
