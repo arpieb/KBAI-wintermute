@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import numbers
+import time
 
 import requests
 
@@ -38,6 +39,10 @@ LIMIT 5
 """
 
 
+class LookupFailed(Exception):
+    pass
+
+
 def _scalar_props(d: dict) -> dict:
     return {k: v for k, v in d.items() if not k.startswith("@") and isinstance(v, (str, numbers.Number))}
 
@@ -48,32 +53,62 @@ def _sparql_literal(text: str) -> str:
 
 
 class DBpediaLookup:
-    """DBpedia via its public SPARQL endpoint. Disables itself for the session after a failure."""
+    """DBpedia via its public SPARQL endpoint.
+
+    The endpoint throws occasional transient errors (HTTP 5xx, timeouts), so requests are retried a
+    few times. If it's still failing, lookups pause for a cooldown period rather than for the rest of
+    the session, and each query is retried as normal afterwards.
+    """
+
+    RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+    ATTEMPTS = 3
+    BACKOFF = 0.5  # seconds, doubled per retry
+    COOLDOWN = 60.0  # seconds
 
     def __init__(self, schema: SchemaOrg, timeout: float):
         self.schema = schema
         self.timeout = timeout
-        self.available = True
+        self.paused_until = 0.0
+
+    def _fetch(self, sparql: str) -> list[dict]:
+        """Run a query, retrying transient failures. Raises LookupFailed with a short reason."""
+        reason = ""
+        for attempt in range(self.ATTEMPTS):
+            if attempt:
+                time.sleep(self.BACKOFF * 2 ** (attempt - 1))
+            try:
+                resp = requests.get(
+                    DBPEDIA_SPARQL,
+                    params={"query": sparql, "format": "json"},
+                    headers={"Accept": "application/sparql-results+json"},
+                    timeout=self.timeout,
+                )
+            except (requests.ConnectionError, requests.Timeout) as e:
+                reason = type(e).__name__
+                continue
+            if resp.status_code in self.RETRY_STATUSES:
+                reason = f"HTTP {resp.status_code}"
+                continue
+            if not resp.ok:
+                raise LookupFailed(f"HTTP {resp.status_code}")
+            try:
+                return resp.json()["results"]["bindings"]
+            except (ValueError, KeyError) as e:
+                raise LookupFailed(f"unexpected response ({type(e).__name__})") from e
+        raise LookupFailed(f"{reason} after {self.ATTEMPTS} attempts")
 
     def search(self, query: str) -> list[Thing]:
         query = query.strip()
-        if not self.available or not query:
+        if not query or time.monotonic() < self.paused_until:
             return []
         # Wikipedia titles are sentence case ("Machine learning"); people and places are title case.
         variants = dict.fromkeys([query, query[:1].upper() + query[1:], query.title()])
         sparql = DBPEDIA_QUERY % " ".join(_sparql_literal(v) for v in variants)
         try:
-            resp = requests.get(
-                DBPEDIA_SPARQL,
-                params={"query": sparql, "format": "json"},
-                headers={"Accept": "application/sparql-results+json"},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            rows = resp.json()["results"]["bindings"]
-        except (requests.RequestException, ValueError, KeyError) as e:
-            log.warning("DBpedia unavailable, disabling for this session: %s", e)
-            self.available = False
+            rows = self._fetch(sparql)
+        except LookupFailed as e:
+            self.paused_until = time.monotonic() + self.COOLDOWN
+            log.warning("DBpedia lookup for %r failed (%s); pausing DBpedia lookups for %ds", query, e, self.COOLDOWN)
             return []
 
         things = []
