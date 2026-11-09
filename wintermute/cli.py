@@ -8,6 +8,7 @@ import logging
 from wintermute.agent import Agent
 from wintermute.config import Settings
 from wintermute.kb import Knowledgebase
+from wintermute.kb.knowledgebase import KBFormatError
 
 
 def chat(agent: Agent, context_id: str) -> None:
@@ -41,7 +42,10 @@ def main(argv: list[str] | None = None) -> None:
     logging.getLogger("wintermute.kb.loaders").setLevel(min(level, logging.INFO))
 
     settings = Settings()
-    kb = Knowledgebase(settings)
+    try:
+        kb = Knowledgebase(settings)
+    except KBFormatError as e:
+        raise SystemExit(str(e)) from None
     try:
         kb.initialize()
         if args.command == "init":

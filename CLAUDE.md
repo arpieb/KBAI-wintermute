@@ -17,7 +17,7 @@ uv run pytest                             # all tests (~20s; session fixture loa
 uv run pytest tests/test_agent.py::test_frame_resolution
 ```
 
-`--debug` re-raises exceptions instead of returning the "please rephrase" reply. Env: `WINTERMUTE_DB`, `WINTERMUTE_CACHE`, `WINTERMUTE_REMOTE_LOOKUPS=0`, `WINTERMUTE_GOOGLE_KG=1` + `GOOGLE_KGSEARCH_API_KEY` (see `wintermute/config.py`). To force a dataset reload, delete `data/wintermute.lbdb` (or its `KBStatus` row).
+`--debug` re-raises exceptions instead of returning the "please rephrase" reply. Env: `WINTERMUTE_DB`, `WINTERMUTE_CACHE`, `WINTERMUTE_REMOTE_LOOKUPS=0`, `WINTERMUTE_ONTOLOGIES` (comma-separated pack names, default `schema,wm`), `WINTERMUTE_GOOGLE_KG=1` + `GOOGLE_KGSEARCH_API_KEY` (see `wintermute/config.py`). To force a dataset reload, delete `data/wintermute.lbdb` (or its `KBStatus` row). A DB from an older storage format (no `kb_format=2` row) is refused with a rebuild message.
 
 ## Architecture
 
@@ -28,13 +28,20 @@ uv run pytest tests/test_agent.py::test_frame_resolution
 
 **Turn pipeline:** strip Slack emoji → spaCy parse → profanity check (`wintermute/data/profanity.txt`, from Pattern) → `resolve_terms` (`kb.find_frames`: frames whose Core FEs have valence units from the sentence's LUs, then the deepest node shared by the longest `Inheritance` ancestor paths) → `retrieve_subject_matter` (topic lookup for NP chunks) → reply handlers in order, first non-`None` wins: debug (`what are my topics`, `setcfg k v`, `getcfg`) → simple canned/"what|who|where is X" → frame (stub; reports frame name when `setcfg debug true`) → chunk-topic fallback.
 
-**Topic lookup** (`Knowledgebase.find_topics`): local name/alias match → DBpedia public SPARQL endpoint (exact English label, follows redirects; descriptions come from `dbo:description`; disables itself for the session on first failure) → Google KG (on hold: off unless `WINTERMUTE_GOOGLE_KG=1` and a key are set). A local hit short-circuits remote lookups, so local things need a `description` to produce a reply. Remote hits are saved as `Thing` nodes plus an alias from the query, then re-queried locally so label filtering (`Thing`/`Person`/`Place`) is consistent.
+**Topic lookup** (`Knowledgebase.find_topics`): local name/alias match → DBpedia public SPARQL endpoint (exact English label, follows redirects; descriptions come from `dbo:description`; retries transient errors, then pauses for a cooldown) → Google KG (on hold: off unless `WINTERMUTE_GOOGLE_KG=1` and a key are set). A local hit short-circuits remote lookups, so local things need a `description` to produce a reply. Remote hits are saved as `Thing` nodes plus an alias from the query, then re-queried locally so label filtering (`schema:Thing`/`schema:Person`/`schema:Place`) is consistent.
 
 ## LadybugDB notes
 
-- Schema is declared up front in `kb/graph.py`. Schema.org multi-labels are a `labels STRING[]` column on `Thing` (filter with `list_contains`); arbitrary properties are a JSON `props` string. `Thing.id` defaults to md5 of labels+name, so `Course.create("CS 7637")` addresses the stored course node.
+- Schema is declared up front in `kb/graph.py`. Type labels are a `labels STRING[]` column on `Thing` holding the root-first ancestry as CURIEs (`schema:Thing` … `schema:Course`; filter with `list_contains`); arbitrary properties are a JSON `props` string with bare keys. `Thing.id` defaults to md5 of the most specific label + name, so `Course.create("CS 7637")` addresses the stored course node.
 - Table names are case-insensitive (hence `alias_of`, not `alias`, alongside `Alias`). No Cypher list comprehensions — use `properties(nodes(p), 'ID')`, `list_*` functions. Recursive patterns filter with `-[:rel*1..N (r, _ | WHERE ...)]->`.
-- Add new specialised thing types by subclassing `Thing` in `models.py` with `type_labels`; `Thing.from_record` dispatches on the most specific label.
+- Add new specialised thing types by subclassing `Thing` in `models.py` with a `type_name` CURIE; `Knowledgebase.save_thing` expands labels to the full ancestry, and `Thing.from_record` dispatches on the most specific registered label.
+
+## Ontologies
+
+- `kb/ontology.py` — `OntologyRegistry` over RDFS/OWL *packs* (`OntologyPack`: prefixes, source, format, version, requires). Packs are parsed with rdflib on a cache miss and cached as JSON (full IRIs) in `<cache>/ontologies/`. Classes carry parents + `owl:equivalentClass` groups; properties carry domain/range (`rdfs:` and `schema:domainIncludes`/`rangeIncludes`). Rootless classes and `owl:Thing` fold into `schema:Thing`; datatypes (`schema:Text` …) are known but never labels. Bare names resolve in the `schema` namespace; `http://` and `https://schema.org/` both compact to `schema:`.
+- `kb/ontology_packs.py` — built-in packs: `schema` (Schema.org pinned to `SCHEMA_ORG_VERSION`) and `wm` (`urn:wintermute:`, `wintermute/data/ontologies/wintermute.ttl`, e.g. `wm:CourseSurvey`). Adding a pack: add an entry here (and the RDF file under `data/ontologies/` if local), list Schema.org as `requires`, and put alignment triples (`rdfs:subClassOf`/`owl:equivalentClass` to `schema:` types) in its file. Prefixes may not be rebound.
+- If the `schema` pack can't load, a stub (Thing/Person/Place/Organization/Event/CreativeWork) keeps question-word filters working; unknown types keep `[schema:Thing, type]` labels.
+- Tests use `tests/fixtures/ontologies/` (a Schema.org slice and a DBpedia-style pack) via `conftest.make_registry`; nothing downloads.
 
 ## Known gaps
 

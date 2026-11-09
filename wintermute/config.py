@@ -19,7 +19,7 @@ def _env_path(name: str, default: Path) -> Path:
 class Settings:
     # LadybugDB database file holding the knowledge base and conversation contexts.
     db_path: Path = field(default_factory=lambda: _env_path("WINTERMUTE_DB", REPO_ROOT / "data" / "wintermute.lbdb"))
-    # Directory for downloaded/cached reference data (e.g. the Schema.org hierarchy).
+    # Directory for downloaded/cached reference data (e.g. parsed ontology packs).
     cache_dir: Path = field(default_factory=lambda: _env_path("WINTERMUTE_CACHE", REPO_ROOT / "data" / "cache"))
     # FrameNet 1.7 XML release.
     framenet_dir: Path = field(default_factory=lambda: _env_path("WINTERMUTE_FRAMENET", REPO_ROOT / "assets" / "framenet"))
@@ -30,4 +30,10 @@ class Settings:
     # Google Knowledge Graph lookups are on hold; set WINTERMUTE_GOOGLE_KG=1 (plus an API key) to enable.
     google_kg: bool = field(default_factory=lambda: os.environ.get("WINTERMUTE_GOOGLE_KG", "0") == "1")
     google_api_key: str | None = field(default_factory=lambda: os.environ.get("GOOGLE_KGSEARCH_API_KEY"))
+    # Ontology packs to load (see wintermute/kb/ontology_packs.py), comma-separated in the env var.
+    ontologies: list[str] = field(
+        default_factory=lambda: [
+            n.strip() for n in os.environ.get("WINTERMUTE_ONTOLOGIES", "schema,wm").split(",") if n.strip()
+        ]
+    )
     http_timeout: float = 10.0

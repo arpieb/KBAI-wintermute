@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "en-core-web-sm",
     "ladybug>=0.22.3",
+    "rdflib>=7.1",
     "requests>=2.34.2",
     "slack-bolt>=1.30.0",
     "spacy>=3.8.18",
