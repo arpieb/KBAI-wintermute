@@ -27,6 +27,10 @@ MAX_ANCESTOR_DEPTH = 30
 KB_FORMAT = "kb_format=2"
 
 
+# KBStatus key prefix recording which ontology packs the stored labels were computed with.
+ONTOLOGY_STATUS_PREFIX = "ontology="
+
+
 class KBFormatError(RuntimeError):
     pass
 
@@ -41,6 +45,7 @@ class Knowledgebase:
         self.ontology = ontology or OntologyRegistry(
             packs_for(self.settings.ontologies), self.settings.cache_dir, self.settings.http_timeout
         )
+        self._sync_labels()
         self.dbpedia = DBpediaLookup(self.ontology, self.settings.http_timeout)
         google_key = self.settings.google_api_key if self.settings.google_kg else None
         self.google = GoogleKGLookup(self.ontology, google_key, self.settings.http_timeout)
@@ -54,6 +59,28 @@ class Knowledgebase:
                 "Delete it and run `wintermute init` to rebuild it."
             )
         self.graph.mark_loaded(KB_FORMAT)
+
+    def _sync_labels(self) -> None:
+        """Re-expand stored labels when the loaded ontology packs change (one KBStatus row per set).
+
+        Labels from a pack that's no longer loaded are kept (they're harmless); remote types that were
+        dropped at lookup time because no pack knew them can't be recovered.
+        """
+        key = f"{ONTOLOGY_STATUS_PREFIX}{self.ontology.fingerprint}"
+        if self.graph.is_loaded(key):
+            return
+        changed = 0
+        for row in self.graph.rows("MATCH (t:Thing) RETURN t.ID AS id, t.labels AS labels"):
+            labels = self.ontology.labels_for(row["labels"])
+            if labels != list(row["labels"]):
+                self.graph.execute("MATCH (t:Thing {ID: $id}) SET t.labels = $labels", {"id": row["id"], "labels": labels})
+                changed += 1
+        if changed:
+            log.info("Updated labels on %d things for ontology packs %s", changed, self.ontology.fingerprint)
+        self.graph.execute(
+            "MATCH (s:KBStatus) WHERE starts_with(s.key, $prefix) DELETE s", {"prefix": ONTOLOGY_STATUS_PREFIX}
+        )
+        self.graph.mark_loaded(key)
 
     def initialize(self) -> None:
         """Populate the KB from static sources. Each dataset loads once; see KBStatus."""

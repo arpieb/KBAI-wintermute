@@ -33,7 +33,7 @@ class Settings:
     # Ontology packs to load (see wintermute/kb/ontology_packs.py), comma-separated in the env var.
     ontologies: list[str] = field(
         default_factory=lambda: [
-            n.strip() for n in os.environ.get("WINTERMUTE_ONTOLOGIES", "schema,wm").split(",") if n.strip()
+            n.strip() for n in os.environ.get("WINTERMUTE_ONTOLOGIES", "schema,wm,dbo").split(",") if n.strip()
         ]
     )
     http_timeout: float = 10.0
