@@ -3,6 +3,27 @@
 CS 7637, FA 2016, OMSCS  
 Robert Bates  
 
+> **2026 update:** the original Python 2.7 / Heroku / Neo4j / CLiPS Pattern / python-rtmbot
+> implementation has been ported to Python 3 with spaCy, an embedded
+> [LadybugDB](https://ladybugdb.com/) graph database, and Slack Bolt. The chatbot core no longer
+> depends on Slack and can be run in a terminal. The rest of this README is the original 2016
+> project write-up.
+
+## Running
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```sh
+uv sync
+uv run wintermute init     # one-time: builds data/wintermute.lbdb from FrameNet + course data (~20s)
+uv run wintermute          # chat in the terminal
+uv run wintermute slack    # run as a Slack bot (needs SLACK_BOT_TOKEN and SLACK_APP_TOKEN)
+uv run pytest              # tests
+```
+
+Unknown topics are looked up on DBpedia (SPARQL). Optional environment: `WINTERMUTE_REMOTE_LOOKUPS=0` disables remote lookups entirely; `WINTERMUTE_DB` overrides
+the database location.
+
 ## Project Goal
 
 >Conversational agents must be able to discuss for 5 minutes or more 
@@ -82,7 +103,7 @@ Robert Bates
   representation / ontology of domain information
 * SlackHQ Team @ [FA2016 KBAI: Wintermute](https://fa16-kbai-wintermute.slack.com)
 * SlackHQ official RTM bot codebase: [slackhq/python-rtmbot](https://github.com/slackhq/python-rtmbot)
-* [OMSCS Course Surveys](https://omscentral.com/about/faq), JSON API interface
+* [OMSCS Course Surveys](https://omscentral.com/about/faq), JSON API interface (2026: replaced by [OMSCentral](https://www.omscentral.com) review data)
 * [Google Knowledge Graph Search API](https://developers.google.com/knowledge-graph/) for on-demand lookup, results returned in Schema.org structures
 * Hosted on [Heroku](https://www.heroku.com/):
     * Hobby-level Python 2.7 dyno

@@ -4,38 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project context
 
-Wintermute is an archived (2016, Georgia Tech OMSCS CS 7637 / KBAI) conversational Slack bot. It is a legacy snapshot preserved "for posterity" — expect Python 2.7 syntax (`print` statements, `httplib`, `urlparse`, `dict.has_key`) and pinned 2016-era dependencies (`requirements.txt`, `runtime.txt` = python-2.7.12). Do not "modernize" to Python 3 unless asked. There are no tests, linters, or build steps.
+Wintermute is a 2016 Georgia Tech OMSCS CS 7637 (KBAI) conversational agent, ported in 2026 from Python 2.7 / Neo4j / CLiPS Pattern / python-rtmbot to Python 3 / LadybugDB / spaCy / Slack Bolt. The 2016 implementation is in git history (`plugins/wintermute.py` at commit `e71e157`) and is the reference for intended behavior; bot reply wording is the author's and should be preserved.
 
-## Running
+## Commands
 
-The bot is an [slackhq/python-rtmbot](https://github.com/slackhq/python-rtmbot) (v0.4.0) worker originally hosted on Heroku:
+```sh
+uv sync                                   # install (includes the en_core_web_sm spaCy model)
+uv run wintermute init                    # build data/wintermute.lbdb (FrameNet + courses), ~20s
+uv run wintermute [--debug] [-v|-vv] chat [--context ID]   # terminal chat (default command)
+uv run wintermute slack                   # Slack bot; needs SLACK_BOT_TOKEN + SLACK_APP_TOKEN
+uv run pytest                             # all tests (~20s; session fixture loads real FrameNet)
+uv run pytest tests/test_agent.py::test_frame_resolution
+```
 
-- Production: `Procfile` → `rtmbot` (reads `rtmbot.conf`)
-- Local dev: `./rundev` → `heroku local worker --procfile Procfile.dev` → `rtmbot -c ./rtmbot.dev`
-
-Neither `rtmbot.conf` nor `rtmbot.dev` is committed; they hold the Slack token and the list of active plugins (e.g. `plugins.wintermute.WintermuteDirectPlugin`). Required env vars (Heroku `.env`, gitignored):
-
-- `GRAPHENEDB_BOLT_URL`, `GRAPHENEDB_BOLT_USER`, `GRAPHENEDB_BOLT_PASSWORD` — Neo4j (Bolt) connection
-- `GOOGLE_KGSEARCH_API_KEY` — Google Knowledge Graph Search fallback
-
-`assets/seed/graph.tar.gz` is a pre-populated Neo4j `graph.db` directory that can be restored instead of building the KB from scratch.
+`--debug` re-raises exceptions instead of returning the "please rephrase" reply. Env: `WINTERMUTE_DB`, `WINTERMUTE_CACHE`, `WINTERMUTE_REMOTE_LOOKUPS=0`, `WINTERMUTE_GOOGLE_KG=1` + `GOOGLE_KGSEARCH_API_KEY` (see `wintermute/config.py`). To force a dataset reload, delete `data/wintermute.lbdb` (or its `KBStatus` row).
 
 ## Architecture
 
-Nearly all logic lives in `plugins/wintermute.py` (`plugins/logger.py` is a trivial event-dump plugin).
+- `wintermute/agent.py` — the front-end-agnostic core. `Agent.respond(text, context_id) -> str` is the only API front ends use. Each call builds a `Conversation` that loads the context (topics + config) by ID, parses, picks a reply, and saves the context.
+- `wintermute/cli.py` (terminal REPL, entry point) and `wintermute/slack.py` (Bolt Socket Mode; DMs keyed by channel ID) are thin front ends.
+- `wintermute/nlp.py` — spaCy layer replacing Pattern. `parse()` returns `Sentence` objects with `Chunk`s (`NP`, or `NPCD` for "CS 7637" course codes and bare numbers) and `fn_lemmata` mapping FrameNet-style `lemma.pos` keys (Penn tags → FrameNet POS via `FN_TO_PTB`) to tokens. `find_wh_be`/`phrase_for`/`contains_lemmas` stand in for Pattern's `match()` rules.
+- `wintermute/kb/` — `Knowledgebase` facade over `Graph` (embedded LadybugDB). Loaders (`loaders.py`) run once each, tracked in the `KBStatus` table: FrameNet XML from `assets/framenet/` is bulk-loaded via CSV `COPY`; course catalog is fetched from GitHub; specializations are hardcoded and must load after courses.
 
-**Import-time side effect:** the module ends with `_kb = WintermuteKnowledgebase()`. Importing the module connects to Neo4j, downloads the Schema.org hierarchy (schema.link.fish), and — on first run — loads FrameNet XML from `assets/framenet/` (frames, LUs, `frRelation.xml`), the GT course catalog (GatechVIP GitHub JSON), OMSCS course surveys (gt-surveyor Firebase), and specializations into the graph. Each loader is skipped once its flag is set on the singleton `(:WMKBStatus)` node; delete that property to force a reload. Paths like `./assets/framenet/frame` are relative to the repo root, so the bot must be run from there.
+**Turn pipeline:** strip Slack emoji → spaCy parse → profanity check (`wintermute/data/profanity.txt`, from Pattern) → `resolve_terms` (`kb.find_frames`: frames whose Core FEs have valence units from the sentence's LUs, then the deepest node shared by the longest `Inheritance` ancestor paths) → `retrieve_subject_matter` (topic lookup for NP chunks) → reply handlers in order, first non-`None` wins: debug (`what are my topics`, `setcfg k v`, `getcfg`) → simple canned/"what|who|where is X" → frame (stub; reports frame name when `setcfg debug true`) → chunk-topic fallback.
 
-**Message flow:**
-1. `WintermuteDirectPlugin.process_message` handles DM channels (`D…`); `WintermuteGeneralPlugin` just replies with a "DM me" stub for public channels (`C…`).
-2. `WintermuteAgent.process_input` builds a `WintermuteContext` keyed by Slack channel ID (persisted in Neo4j via `load_context`/`save_context`) and wraps everything in a catch-all that returns a "please rephrase" message — uncomment the `raise` there to see real tracebacks.
-3. `WintermuteContext.parse_input`: strip Slack emoji markup → Pattern `parsetree` → profanity check (raises `WintermuteProfanityBlock`) → `extract_terms` (maps Penn Treebank tags to FrameNet POS lemmata like `learn.v`, special-cases `CS 7637`-style course bigrams) → `resolve_terms` (Cypher query finding the common ancestor frame over `Inheritance`/`Reframing_Mapping` relations, then maps chunks to frame elements) → `retrieve_subject_matter` (topic lookup for NP chunks).
-4. `create_response` tries handlers in order, first non-`None` wins: `_create_response_debug` (`what are my topics`, `setcfg <k> <v>`, `getcfg`) → `_create_response_simple` (Pattern `match()` canned patterns like `[what] be {*}`) → `_create_response_frame` (mostly a TODO; reports the frame when `setcfg debug true`) → `_create_response_chunks`.
+**Topic lookup** (`Knowledgebase.find_topics`): local name/alias match → DBpedia public SPARQL endpoint (exact English label, follows redirects; descriptions come from `dbo:description`; disables itself for the session on first failure) → Google KG (on hold: off unless `WINTERMUTE_GOOGLE_KG=1` and a key are set). A local hit short-circuits remote lookups, so local things need a `description` to produce a reply. Remote hits are saved as `Thing` nodes plus an alias from the query, then re-queried locally so label filtering (`Thing`/`Person`/`Place`) is consistent.
 
-**Knowledge lookup** (`WintermuteKnowledgebase.find_topics`): local Neo4j → DBpedia Lookup → Google KG Search. Results are saved back as nodes with an `(:Alias)-[:alias]->` link from the search string, then re-queried locally. Nodes are labeled with their full Schema.org ancestry (e.g. `Thing:CreativeWork:Course`); `Course` and `CourseSurvey` are custom extensions added in `_init_schema_org`.
+## LadybugDB notes
 
-**Domain classes:** `WintermuteThing` subclasses (one per Schema.org type: `WintermuteCourse`, `WintermuteBook`, …) each override `get_response()` to format a reply; `FN*` classes model FrameNet frames/FEs/LUs. To add a new response type, add a subclass and dispatch on its label in `_create_response_chunks`.
+- Schema is declared up front in `kb/graph.py`. Schema.org multi-labels are a `labels STRING[]` column on `Thing` (filter with `list_contains`); arbitrary properties are a JSON `props` string. `Thing.id` defaults to md5 of labels+name, so `Course.create("CS 7637")` addresses the stored course node.
+- Table names are case-insensitive (hence `alias_of`, not `alias`, alongside `Alias`). No Cypher list comprehensions — use `properties(nodes(p), 'ID')`, `list_*` functions. Recursive patterns filter with `-[:rel*1..N (r, _ | WHERE ...)]->`.
+- Add new specialised thing types by subclassing `Thing` in `models.py` with `type_labels`; `Thing.from_record` dispatches on the most specific label.
 
-## Reference material
+## Known gaps
 
-`README.md` contains a FrameNet 1.7 cheat sheet (top-level frames, phrase types, grammatical functions, frame relations). The FrameNet book and XML docs are in `assets/framenet/docs/`.
+- `CourseSurvey` ratings come from OMSCentral's public Sanity dataset (`OMSCENTRAL_*` in `kb/loaders.py`; one aggregated GROQ query per KB build, ~10s). It is unofficial and undocumented and could be locked down; keep request volume minimal (apicdn host, no per-turn queries). Course codes come from each record's `codes` array ("CS-7637"), never from `_id`.
+- `lookup.dbpedia.org` (the DBpedia Lookup API) refuses connections; the SPARQL endpoint is used instead.
+- `assets/seed/graph.tar.gz` is a Neo4j 3.0 store from 2016 and is not used.
+- `README.md` contains a FrameNet 1.7 cheat sheet (frames, phrase types, grammatical functions, relations); FrameNet docs are in `assets/framenet/docs/`.

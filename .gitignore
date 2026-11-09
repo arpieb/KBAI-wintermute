@@ -72,3 +72,5 @@ venv/
 # macOS cruft
 .DS_Store
 
+data/
+.venv/
