@@ -8,7 +8,7 @@ import time
 
 import requests
 
-from wintermute.kb.schema_org import SchemaOrg
+from wintermute.kb.ontology import OntologyRegistry
 from wintermute.models import Thing
 
 log = logging.getLogger(__name__)
@@ -65,8 +65,8 @@ class DBpediaLookup:
     BACKOFF = 0.5  # seconds, doubled per retry
     COOLDOWN = 60.0  # seconds
 
-    def __init__(self, schema: SchemaOrg, timeout: float):
-        self.schema = schema
+    def __init__(self, ontology: OntologyRegistry, timeout: float):
+        self.ontology = ontology
         self.timeout = timeout
         self.paused_until = 0.0
 
@@ -114,27 +114,29 @@ class DBpediaLookup:
         things = []
         for row in rows:
             uri, label = row["s"]["value"], row["label"]["value"]
-            # Schema.org and DBpedia ontology class names largely coincide; keep the ones Schema.org knows.
-            types = [t.rsplit("/", 1)[-1] for t in row.get("types", {}).get("value", "").split()]
-            types = [t for t in dict.fromkeys(types) if t in self.schema]
+            # Keep the types a loaded ontology pack knows (http://schema.org/... always; dbo:... once
+            # a DBpedia ontology pack is loaded).
+            iris = row.get("types", {}).get("value", "").split()
+            types = [t for t in dict.fromkeys(self.ontology.resolve(iri) for iri in iris) if t]
             props = {"description": row.get("description", {}).get("value", ""), "url": uri}
-            things.append(Thing(name=label, labels=self.schema.labels_for(types), props=props, id=uri))
+            things.append(Thing(name=label, labels=self.ontology.labels_for(types), props=props, id=uri))
         return things
 
 
 class GoogleKGLookup:
-    def __init__(self, schema: SchemaOrg, api_key: str | None, timeout: float):
-        self.schema = schema
+    def __init__(self, ontology: OntologyRegistry, api_key: str | None, timeout: float):
+        self.ontology = ontology
         self.api_key = api_key
         self.timeout = timeout
 
-    def search(self, query: str, label: str = "Thing") -> list[Thing]:
+    def search(self, query: str, label: str = "schema:Thing") -> list[Thing]:
         if not self.api_key:
             return []
         try:
             resp = requests.get(
                 GOOGLE_KG_SEARCH,
-                params={"query": query, "types": label, "key": self.api_key, "limit": 5},
+                # The API takes bare Schema.org type names.
+                params={"query": query, "types": label.removeprefix("schema:"), "key": self.api_key, "limit": 5},
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -153,5 +155,6 @@ class GoogleKGLookup:
                 props.setdefault("articleBody", result["detailedDescription"].get("articleBody", ""))
             types = result.get("@type", [])
             types = types if isinstance(types, list) else [types]
-            things.append(Thing(name=result["name"], labels=self.schema.labels_for(types), props=props, id=result["@id"]))
+            types = [t for t in dict.fromkeys(self.ontology.resolve(t) for t in types) if t]
+            things.append(Thing(name=result["name"], labels=self.ontology.labels_for(types), props=props, id=result["@id"]))
         return things

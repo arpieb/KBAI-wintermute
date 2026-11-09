@@ -8,36 +8,47 @@ from typing import Any, ClassVar
 
 from wintermute import nlp
 
+# Same as wintermute.kb.ontology.ROOT (not imported: wintermute.kb imports this module).
+ROOT = "schema:Thing"
+
 # --- Knowledge base things ---------------------------------------------------------------------
 
 
 @dataclass(eq=False)
 class Thing:
-    """A knowledge base node. labels is the Schema.org ancestry, e.g. ["Thing", "CreativeWork", "Course"]."""
+    """A knowledge base node.
+
+    labels is the root-first type ancestry as CURIEs, most specific type last, e.g.
+    ["schema:Thing", "schema:CreativeWork", "schema:LearningResource", "schema:Course"]. Things built
+    in code only carry [ROOT, type]; Knowledgebase.save_thing expands that to the full ancestry.
+    """
 
     name: str
-    labels: list[str] = field(default_factory=lambda: ["Thing"])
+    labels: list[str] = field(default_factory=lambda: [ROOT])
     props: dict[str, Any] = field(default_factory=dict)
     id: str = ""
 
-    # Registry of specialised subclasses keyed by their most specific Schema.org type.
+    # Registry of specialised subclasses keyed by their type (a CURIE).
     registry: ClassVar[dict[str, type[Thing]]] = {}
-    type_labels: ClassVar[list[str]] = ["Thing"]
+    type_name: ClassVar[str] = ROOT
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        cls.registry[cls.type_labels[-1]] = cls
+        cls.registry[cls.type_name] = cls
 
     def __post_init__(self):
         if not self.id:
-            # Deterministic ID so the same named thing of the same type always maps to one node.
-            key = ":".join(self.labels) + "|" + self.name
+            # Deterministic ID so the same named thing of the same type always maps to one node. Only
+            # the most specific type is used, so loading a pack that adds intermediate classes doesn't
+            # change existing IDs.
+            key = self.labels[-1] + "|" + self.name
             self.id = hashlib.md5(key.encode("utf-8")).hexdigest()
 
     @classmethod
     def create(cls, name: str, **props) -> Thing:
-        """Build a thing of this class's type with its canonical labels."""
-        return cls(name=name, labels=list(cls.type_labels), props=props)
+        """Build a thing of this class's type. Its full ancestry is filled in when it's saved."""
+        labels = [ROOT] if cls.type_name == ROOT else [ROOT, cls.type_name]
+        return cls(name=name, labels=labels, props=props)
 
     @classmethod
     def from_record(cls, id: str, name: str, labels: list[str], props: dict[str, Any]) -> Thing:
@@ -55,7 +66,7 @@ class Thing:
 
 
 class Course(Thing):
-    type_labels = ["Thing", "CreativeWork", "Course"]
+    type_name = "schema:Course"
 
     def get_response(self) -> str:
         descr = nlp.first_sentence(self.get("description"))
@@ -65,7 +76,7 @@ class Course(Thing):
 
 
 class CourseSurvey(Thing):
-    type_labels = ["Thing", "CreativeWork", "CourseSurvey"]
+    type_name = "wm:CourseSurvey"
 
     def get_response(self) -> str:
         return (
@@ -77,7 +88,7 @@ class CourseSurvey(Thing):
 
 
 class Specialty(Thing):
-    type_labels = ["Thing", "Intangible", "Enumeration", "Specialty"]
+    type_name = "schema:Specialty"
 
     def get_response(self) -> str:
         return self.get("description")

@@ -1,0 +1,43 @@
+@prefix schema: <https://schema.org/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix fibo: <https://spec.edmcouncil.org/fibo/ontology/> .
+
+# A small slice of Schema.org 30.1, in its own modeling style (domainIncludes/rangeIncludes).
+
+schema:Thing a rdfs:Class ; rdfs:label "Thing" .
+schema:Person a rdfs:Class ; rdfs:subClassOf schema:Thing ; rdfs:label "Person" .
+schema:Place a rdfs:Class ; rdfs:subClassOf schema:Thing ; rdfs:label "Place" .
+schema:AdministrativeArea a rdfs:Class ; rdfs:subClassOf schema:Place .
+schema:City a rdfs:Class ; rdfs:subClassOf schema:AdministrativeArea ; rdfs:label "City" ;
+    rdfs:comment "A city or town." .
+schema:Organization a rdfs:Class ; rdfs:subClassOf schema:Thing .
+schema:LocalBusiness a rdfs:Class ; rdfs:subClassOf schema:Organization, schema:Place .
+schema:Event a rdfs:Class ; rdfs:subClassOf schema:Thing .
+schema:CreativeWork a rdfs:Class ; rdfs:subClassOf schema:Thing .
+schema:LearningResource a rdfs:Class ; rdfs:subClassOf schema:CreativeWork .
+schema:Course a rdfs:Class ; rdfs:subClassOf schema:CreativeWork, schema:LearningResource .
+schema:Intangible a rdfs:Class ; rdfs:subClassOf schema:Thing .
+schema:Enumeration a rdfs:Class ; rdfs:subClassOf schema:Intangible .
+schema:Specialty a rdfs:Class ; rdfs:subClassOf schema:Enumeration .
+
+# Superclass in a vocabulary that isn't loaded: ignored.
+schema:BankAccount a rdfs:Class ; rdfs:subClassOf schema:Thing, fibo:BankAccount .
+fibo:BankAccount a rdfs:Class .
+
+# Enumeration member (an individual, not a class).
+schema:Cardiovascular a schema:Specialty .
+
+schema:DataType a rdfs:Class ; rdfs:subClassOf rdfs:Class .
+schema:Text a schema:DataType, rdfs:Class .
+schema:URL a rdfs:Class ; rdfs:subClassOf schema:Text .
+schema:Number a schema:DataType, rdfs:Class .
+schema:Integer a rdfs:Class ; rdfs:subClassOf schema:Number .
+
+schema:name a rdf:Property ; schema:domainIncludes schema:Thing ; schema:rangeIncludes schema:Text .
+schema:description a rdf:Property ; schema:domainIncludes schema:Thing ; schema:rangeIncludes schema:Text .
+schema:birthPlace a rdf:Property ; schema:domainIncludes schema:Person ; schema:rangeIncludes schema:Place ;
+    rdfs:comment "The place where the person was born." .
+schema:containedInPlace a rdf:Property ; schema:domainIncludes schema:Place ; schema:rangeIncludes schema:Place .
+schema:alternateName a rdf:Property ; rdfs:subPropertyOf schema:name ;
+    schema:domainIncludes schema:Thing ; schema:rangeIncludes schema:Text .

@@ -2,14 +2,12 @@ from unittest import mock
 
 import requests
 
-from wintermute.kb.lookup import DBpediaLookup, _sparql_literal
-from wintermute.kb.schema_org import SchemaOrg
+from conftest import DBO_PACK, make_registry
+from wintermute.kb.lookup import DBpediaLookup, GoogleKGLookup, _sparql_literal
 
 
 def schema(tmp_path):
-    s = SchemaOrg.__new__(SchemaOrg)
-    s.parents = {"Thing": [], "Place": ["Thing"], "City": ["Place"], "Person": ["Thing"]}
-    return s
+    return make_registry()
 
 
 def test_sparql_literal_escapes_quotes_and_backslashes():
@@ -34,8 +32,35 @@ def test_dbpedia_results_become_labeled_things(tmp_path):
         [thing] = DBpediaLookup(schema(tmp_path), timeout=1).search("atlanta")
     assert '"Atlanta"@en' in get.call_args.kwargs["params"]["query"]
     assert thing.id == "http://dbpedia.org/resource/Atlanta"
-    assert thing.labels == ["Thing", "Place", "City"]
+    # dbo:Settlement is dropped: no DBpedia ontology pack is loaded.
+    assert thing.labels == ["schema:Thing", "schema:Place", "schema:AdministrativeArea", "schema:City"]
     assert thing.get_response() == "capital city of Georgia, United States"
+
+
+def test_dbpedia_ontology_types_kept_when_pack_loaded():
+    payload = {
+        "results": {
+            "bindings": [
+                {
+                    "s": {"value": "http://dbpedia.org/resource/Atlanta"},
+                    "label": {"value": "Atlanta"},
+                    "types": {"value": "http://dbpedia.org/ontology/Settlement"},
+                }
+            ]
+        }
+    }
+    with mock.patch("wintermute.kb.lookup.requests.get", return_value=_resp(200, payload)):
+        [thing] = DBpediaLookup(make_registry(DBO_PACK), timeout=1).search("atlanta")
+    assert thing.labels == ["schema:Thing", "schema:Place", "dbo:Place", "dbo:PopulatedPlace", "dbo:Settlement"]
+
+
+def test_google_kg_types_are_resolved_to_curies():
+    payload = {"itemListElement": [{"result": {"@id": "kg:/m/0", "name": "Alan Turing", "@type": ["Person", "Thing"]}}]}
+    resp = mock.Mock(json=lambda: payload, raise_for_status=lambda: None)
+    with mock.patch("wintermute.kb.lookup.requests.get", return_value=resp) as get:
+        [thing] = GoogleKGLookup(make_registry(), "key", timeout=1).search("alan turing", "schema:Person")
+    assert get.call_args.kwargs["params"]["types"] == "Person"
+    assert thing.labels == ["schema:Thing", "schema:Person"]
 
 
 def _resp(status, payload=None):

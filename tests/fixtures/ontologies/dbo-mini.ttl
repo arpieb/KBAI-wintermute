@@ -1,0 +1,21 @@
+@prefix dbo: <http://dbpedia.org/ontology/> .
+@prefix schema: <http://schema.org/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# A DBpedia-ontology-style pack: OWL classes, aligned to Schema.org via the http:// IRIs DBpedia uses.
+
+dbo:Place a owl:Class ; owl:equivalentClass schema:Place .
+dbo:PopulatedPlace a owl:Class ; rdfs:subClassOf dbo:Place .
+dbo:Settlement a owl:Class ; rdfs:subClassOf dbo:PopulatedPlace .
+dbo:City a owl:Class ; rdfs:subClassOf dbo:Settlement ; owl:equivalentClass schema:City .
+
+# Rootless in DBpedia terms (subclass of owl:Thing only).
+dbo:Agent a owl:Class ; rdfs:subClassOf owl:Thing .
+dbo:Person a owl:Class ; rdfs:subClassOf dbo:Agent .
+schema:Person owl:equivalentClass dbo:Person .
+
+# No parent at all.
+dbo:TopicalConcept a owl:Class .
+
+dbo:birthPlace a owl:ObjectProperty ; rdfs:domain dbo:Person ; rdfs:range dbo:Place .

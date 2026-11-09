@@ -108,7 +108,7 @@ class Conversation:
             if chunk.type in ("NP", "NPCD") and chunk.head.lower_ not in PRONOUNS:
                 chunk.topics = self.find_topics(chunk.text)
 
-    def find_topics(self, query: str, label: str = "Thing") -> list[Thing]:
+    def find_topics(self, query: str, label: str = "schema:Thing") -> list[Thing]:
         topics = self.kb.find_topics(query, label)
         known = {t.id for t in self.topics}
         self.topics += [t for t in topics if t.id not in known]
@@ -165,7 +165,7 @@ class Conversation:
             )
 
         # Generic inquiries, restricted to the matching part of the Schema.org hierarchy.
-        for wh, label in (({"what"}, "Thing"), ({"who", "whom"}, "Person"), ({"where"}, "Place")):
+        for wh, label in (({"what"}, "schema:Thing"), ({"who", "whom"}, "schema:Person"), ({"where"}, "schema:Place")):
             rest = nlp.find_wh_be(sent, wh)
             if rest:
                 query = nlp.phrase_for(sent, rest)

@@ -1,4 +1,5 @@
-import json
+import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -6,7 +7,29 @@ from wintermute.agent import Agent
 from wintermute.config import Settings
 from wintermute.kb import Knowledgebase
 from wintermute.kb.loaders import COURSE_ALIASES
+from wintermute.kb.ontology import OntologyPack, OntologyRegistry
+from wintermute.kb.ontology_packs import PACKS
 from wintermute.models import Course
+
+FIXTURE_ONTOLOGIES = Path(__file__).parent / "fixtures" / "ontologies"
+# The real Schema.org pack, pointed at a small local slice of it.
+SCHEMA_PACK = dataclasses.replace(PACKS["schema"], source=str(FIXTURE_ONTOLOGIES / "schema-mini.ttl"), format="turtle")
+DBO_PACK = OntologyPack(
+    name="dbo",
+    prefixes={"dbo": ["http://dbpedia.org/ontology/"]},
+    source=str(FIXTURE_ONTOLOGIES / "dbo-mini.ttl"),
+    requires=("schema",),
+)
+
+
+def make_registry(*extra: OntologyPack, cache_dir: Path | None = None) -> OntologyRegistry:
+    """Registry over the fixture Schema.org slice, the real wm pack, and any extra packs."""
+    return OntologyRegistry([SCHEMA_PACK, PACKS["wm"], *extra], cache_dir=cache_dir)
+
+
+@pytest.fixture(scope="session")
+def ontology():
+    return make_registry()
 
 COURSES = {
     "CS 7637": ("Knowledge-Based AI", "Structured knowledge representation. More text."),
@@ -16,17 +39,13 @@ COURSES = {
 
 
 @pytest.fixture(scope="session")
-def kb(tmp_path_factory):
+def kb(tmp_path_factory, ontology):
     """A KB with the real FrameNet data and a few fixture courses. No network access."""
     tmp = tmp_path_factory.mktemp("kb")
     cache = tmp / "cache"
     cache.mkdir()
-    # Minimal Schema.org hierarchy so nothing is downloaded.
-    (cache / "schemaorg-parents.json").write_text(
-        json.dumps({"Thing": [], "Place": ["Thing"], "City": ["Place"], "Person": ["Thing"], "CreativeWork": ["Thing"]})
-    )
     settings = Settings(db_path=tmp / "test.lbdb", cache_dir=cache, remote_lookups=False, google_api_key=None)
-    kb = Knowledgebase(settings)
+    kb = Knowledgebase(settings, ontology=ontology)
     for key in ("courses", "course_surveys"):
         kb.graph.mark_loaded(key)
     for name, (alt, descr) in COURSES.items():

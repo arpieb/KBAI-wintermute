@@ -10,7 +10,8 @@ from wintermute.config import Settings
 from wintermute.kb import loaders
 from wintermute.kb.graph import Graph
 from wintermute.kb.lookup import DBpediaLookup, GoogleKGLookup
-from wintermute.kb.schema_org import SchemaOrg
+from wintermute.kb.ontology import OntologyRegistry
+from wintermute.kb.ontology_packs import packs_for
 from wintermute.models import FNFrame, FNFrameElement, FNLexicalUnit, Thing
 
 log = logging.getLogger(__name__)
@@ -21,15 +22,38 @@ log = logging.getLogger(__name__)
 ANCESTOR_RELATIONS = ["Inheritance"]
 MAX_ANCESTOR_DEPTH = 30
 
+# Bumped when the stored representation changes in a way that needs a rebuild. Format 2: Thing
+# labels are CURIEs ("schema:Course") and Thing IDs hash only the most specific type.
+KB_FORMAT = "kb_format=2"
+
+
+class KBFormatError(RuntimeError):
+    pass
+
 
 class Knowledgebase:
-    def __init__(self, settings: Settings | None = None, graph: Graph | None = None):
+    def __init__(
+        self, settings: Settings | None = None, graph: Graph | None = None, ontology: OntologyRegistry | None = None
+    ):
         self.settings = settings or Settings()
         self.graph = graph or Graph(self.settings.db_path)
-        self.schema = SchemaOrg(self.settings.cache_dir, self.settings.http_timeout)
-        self.dbpedia = DBpediaLookup(self.schema, self.settings.http_timeout)
+        self._check_format()
+        self.ontology = ontology or OntologyRegistry(
+            packs_for(self.settings.ontologies), self.settings.cache_dir, self.settings.http_timeout
+        )
+        self.dbpedia = DBpediaLookup(self.ontology, self.settings.http_timeout)
         google_key = self.settings.google_api_key if self.settings.google_kg else None
-        self.google = GoogleKGLookup(self.schema, google_key, self.settings.http_timeout)
+        self.google = GoogleKGLookup(self.ontology, google_key, self.settings.http_timeout)
+
+    def _check_format(self) -> None:
+        if self.graph.is_loaded(KB_FORMAT):
+            return
+        if self.graph.rows("MATCH (t:Thing) RETURN t.ID LIMIT 1"):
+            raise KBFormatError(
+                f"The knowledge base at {self.settings.db_path} was built by an older version of Wintermute. "
+                "Delete it and run `wintermute init` to rebuild it."
+            )
+        self.graph.mark_loaded(KB_FORMAT)
 
     def initialize(self) -> None:
         """Populate the KB from static sources. Each dataset loads once; see KBStatus."""
@@ -41,6 +65,8 @@ class Knowledgebase:
     # --- Things ------------------------------------------------------------------------------
 
     def save_thing(self, thing: Thing) -> None:
+        """Store a thing, expanding its labels to the full canonical ancestry of its types."""
+        thing.labels = self.ontology.labels_for(thing.labels)
         self.graph.execute(
             "MERGE (t:Thing {ID: $id}) SET t.name = $name, t.labels = $labels, t.props = $props",
             {"id": thing.id, "name": thing.name, "labels": thing.labels, "props": json.dumps(thing.props)},
@@ -63,7 +89,7 @@ class Knowledgebase:
     def _thing(node: dict[str, Any]) -> Thing:
         return Thing.from_record(node["ID"], node["name"], list(node["labels"]), json.loads(node["props"] or "{}"))
 
-    def find_topics(self, query: str, label: str = "Thing") -> list[Thing]:
+    def find_topics(self, query: str, label: str = "schema:Thing") -> list[Thing]:
         """Find things by name or alias, falling back to DBpedia then Google, caching what's found."""
         topics = self._find_topics_local(query, label)
         if not topics and self.settings.remote_lookups:
@@ -76,7 +102,7 @@ class Knowledgebase:
         return topics
 
     def _find_topics_local(self, query: str, label: str) -> list[Thing]:
-        params = {"name": query.lower(), "label": label}
+        params = {"name": query.lower(), "label": self.ontology.curie(label) or label}
         by_name = self.graph.rows(
             "MATCH (t:Thing) WHERE lower(t.name) = $name AND list_contains(t.labels, $label) RETURN t", params
         )
