@@ -6,6 +6,7 @@ from conftest import DBO_PACK, SCHEMA_PACK, make_registry
 from wintermute import models
 from wintermute.config import Settings
 from wintermute.kb import ontology as ontology_mod
+from wintermute.kb import ontology_packs
 from wintermute.kb.graph import Graph
 from wintermute.kb.knowledgebase import KBFormatError, Knowledgebase
 from wintermute.kb.ontology import ROOT, OntologyPack, OntologyRegistry
@@ -186,3 +187,57 @@ def test_new_kb_is_stamped_with_format(tmp_path, ontology):
     kb.save_thing(Course.create("CS 1000"))
     Knowledgebase(settings, graph=graph, ontology=ontology)  # reopening is fine
     kb.close()
+
+
+# --- DBpedia ontology pack and label maintenance ----------------------------------------------
+
+
+def test_most_specific_type_ends_up_last(with_dbo):
+    # Remote sources list types in arbitrary order.
+    labels = with_dbo.labels_for(["dbo:Settlement", "schema:Place", "dbo:PopulatedPlace"])
+    assert labels[-1] == "dbo:Settlement"
+    assert with_dbo.labels_for(["dbo:Person", "dbo:Agent"])[-1] == "dbo:Person"
+    assert with_dbo.labels_for(["schema:City", "schema:Thing"])[-1] == "schema:City"
+
+
+def test_dbo_types_satisfy_schema_question_filters(with_dbo):
+    assert with_dbo.is_a("dbo:Settlement", "schema:Place")
+    assert with_dbo.is_a("dbo:Person", "schema:Person")
+
+
+def test_default_packs_include_dbpedia_ontology(monkeypatch):
+    monkeypatch.delenv("WINTERMUTE_ONTOLOGIES", raising=False)
+    assert Settings().ontologies == ["schema", "wm", "dbo"]
+    monkeypatch.setenv("WINTERMUTE_ONTOLOGIES", "schema, wm")
+    assert Settings().ontologies == ["schema", "wm"]
+    dbo = PACKS["dbo"]
+    assert dbo.requires == ("schema",)
+    assert dbo.prefixes == {"dbo": ["http://dbpedia.org/ontology/"]}
+    assert ontology_packs.DBPEDIA_ONTOLOGY_COMMIT in dbo.source  # pinned, not a branch
+
+
+def test_fingerprint_tracks_packs_and_fallbacks(ontology, with_dbo):
+    assert ontology.fingerprint.startswith("schema@")
+    assert "dbo@" in with_dbo.fingerprint and "dbo@" not in ontology.fingerprint
+    stubbed = OntologyRegistry([dataclasses.replace(SCHEMA_PACK, source="/nonexistent.ttl"), PACKS["wm"]])
+    assert stubbed.fingerprint.startswith("schema@stub,")
+
+
+def test_stored_labels_are_refreshed_when_packs_change(tmp_path, ontology, with_dbo):
+    settings = Settings(db_path=tmp_path / "kb.lbdb", cache_dir=tmp_path, remote_lookups=False)
+    graph = Graph(settings.db_path)
+    kb = Knowledgebase(settings, graph=graph, ontology=ontology)
+    city = Thing(name="Atlanta", labels=["schema:City"], id="http://dbpedia.org/resource/Atlanta")
+    kb.save_thing(city)
+    course = Course.create("CS 1000")
+    kb.save_thing(course)
+    assert "dbo:City" not in kb.find_topics("atlanta")[0].labels
+
+    kb = Knowledgebase(settings, graph=graph, ontology=with_dbo)
+    [found] = kb.find_topics("atlanta", "dbo:Settlement")
+    assert found.labels[-1] in ("schema:City", "dbo:City")
+    assert {"dbo:City", "dbo:PopulatedPlace"} <= set(found.labels)
+    assert kb.find_topics("cs 1000")[0].id == course.id
+    status = [r["k"] for r in graph.rows("MATCH (s:KBStatus) RETURN s.key AS k") if r["k"].startswith("ontology=")]
+    assert status == [f"ontology={with_dbo.fingerprint}"]
+    graph.close()

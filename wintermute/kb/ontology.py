@@ -101,6 +101,7 @@ class OntologyRegistry:
         self.classes: dict[str, OntClass] = {}
         self.properties: dict[str, OntProperty] = {}
         self._ancestors: dict[str, list[str]] = {}
+        self._stubbed: set[str] = set()
 
         packs = _dependency_order(list(packs))
         for pack in packs:
@@ -117,11 +118,20 @@ class OntologyRegistry:
                 log.warning("Ontology pack %r unavailable; its types will have shallow labels", pack.name)
                 if pack.name == DEFAULT_PREFIX:
                     loaded = _stub_schema_pack()
+                    self._stubbed.add(pack.name)
                 else:
                     continue
             self.packs.append(pack)
             raw.append((pack, loaded))
         self._build(raw)
+
+    @property
+    def fingerprint(self) -> str:
+        """Identifies the loaded packs and versions; stored labels are valid for one fingerprint."""
+        def tag(p: OntologyPack) -> str:
+            return "stub" if p.name in self._stubbed else p.cache_name.rsplit("-", 1)[-1].removesuffix(".json")
+
+        return ",".join(f"{p.name}@{tag(p)}" for p in self.packs)
 
     # --- Names -----------------------------------------------------------------------------
 
@@ -194,10 +204,16 @@ class OntologyRegistry:
         return list(self._ancestors[curie])
 
     def labels_for(self, names: Iterable[str]) -> list[str]:
-        """Merged ancestry of several types, skipping datatypes. The first type's chain comes first."""
+        """Merged ancestry of several types, skipping datatypes.
+
+        Types are merged shallowest first (ties keep their order), so the most specific type ends up
+        last, which is what Thing IDs and Thing.from_record key on. Remote sources list types in no
+        particular order (DBpedia gives Alan Turing Animal, Person, Scientist, Species, ...).
+        """
+        chains = sorted((self.ancestors(name) for name in names), key=len)
         merged: list[str] = []
-        for name in names:
-            for label in self.ancestors(name):
+        for chain in chains:
+            for label in chain:
                 if label not in merged and not self.is_datatype(label):
                     merged.append(label)
         return merged or [ROOT]
